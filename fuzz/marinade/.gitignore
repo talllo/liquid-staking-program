@@ -1,3 +1,8 @@
 /target/
 /build/
 /crashes/
+# Unpacked from fixtures-mainnet.tar.gz by build-bundle.sh
+/fixtures/mainnet/
+# Generated from the program source by `anchor build` in CI (see .github/workflows/fuzzcorp.yml)
+/programs/marinade_program.so
+/idls/marinade.json

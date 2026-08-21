@@ -1,7 +1,8 @@
 name: FuzzCorp bundle (marinade_invariants)
 
-# Builds the Marinade crucible fuzz harness (fuzz/marinade) and submits it to FuzzCorp as a bundle.
-# Runs on every push to main that touches the harness, and can be triggered manually.
+# Builds the target program from THIS ref's source, builds the crucible fuzz harness against it,
+# and submits the bundle to FuzzCorp. Runs on every PR and on push to main, so each change is
+# fuzzed against its own program build — no prebuilt program/IDL is committed to the repo.
 #
 # Required repo configuration (Settings > Secrets and variables > Actions):
 #   - secret  FUZZ_API_KEY       FuzzCorp dashboard API key (service account)
@@ -11,18 +12,25 @@ name: FuzzCorp bundle (marinade_invariants)
 on:
   push:
     branches: [main]
-    paths:
-      - 'fuzz/marinade/**'
-      - '.github/workflows/fuzzcorp.yml'
+  pull_request:
   workflow_dispatch: {}
 
-# ubuntu-latest is amd64, matching the FuzzCorp worker fleet — the harness builds natively, no
-# cross-compilation needed.
 jobs:
   build-and-upload:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # amd64 — matches the FuzzCorp worker fleet
     steps:
       - uses: actions/checkout@v4
+
+      # The program only builds with the pinned anchor 0.27 / solana 1.14.29 toolchain (modern
+      # toolchains fail on ahash's `stdsimd`). The verifiable-build image carries that toolchain and
+      # produces the same 1.14.29 SBF binary the harness needs (it clears crucible's CPI wall).
+      - name: Build marinade program (anchor 0.27 / solana 1.14.29)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work backpackapp/build:v0.27.0 \
+            bash -lc "anchor build"
+          sudo chown -R "$(id -u):$(id -g)" target
+          cp target/deploy/marinade_finance.so fuzz/marinade/programs/marinade_program.so
+          cp target/idl/marinade_finance.json  fuzz/marinade/idls/marinade.json
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.92.0
@@ -39,7 +47,10 @@ jobs:
       - name: Build FuzzCorp bundle
         run: bash fuzz/marinade/build-bundle.sh
 
+      # Upload only when secrets are available (pushes and same-repo PRs). Fork PRs still build the
+      # program + harness above as a check, but can't upload (GitHub withholds secrets from forks).
       - name: Upload bundle to FuzzCorp
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: asymmetric-research/fuzz-upload-action@v2
         with:
           upload_type: bundle
