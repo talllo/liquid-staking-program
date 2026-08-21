@@ -1,0 +1,110 @@
+name: FuzzCorp bundle (marinade_invariants)
+
+# Builds the target program from THIS ref's source, builds the crucible fuzz harness against it,
+# and submits the bundle to FuzzCorp. Runs on every PR and on push to main, so each change is
+# fuzzed against its own program build — no prebuilt program/IDL is committed to the repo.
+#
+# Required repo configuration (Settings > Secrets and variables > Actions):
+#   - secret  FUZZ_API_KEY       FuzzCorp dashboard API key (service account)
+#   - var     FUZZ_ORGANIZATION  = marinade
+#   - var     FUZZ_PROJECT       = liquid-staking-program
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest  # amd64 — matches the FuzzCorp worker fleet
+    # Bound the job: without this a run can sit for hours (6h GitHub default).
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The program only builds with the pinned anchor 0.27 / solana 1.14.29 toolchain (modern
+      # toolchains fail on ahash's `stdsimd`). The verifiable-build image carries that toolchain and
+      # produces the same 1.14.29 SBF binary the harness needs (it clears crucible's CPI wall).
+      # CARGO_PROFILE_RELEASE_DEBUG=2 / STRIP=none are load-bearing for coverage.
+      # `anchor build` emits NO DWARF by default: the intermediate at
+      # target/bpfel-unknown-unknown/release/ keeps its symbol table (so `file`
+      # reports "not stripped" and it looks usable) while carrying zero compile
+      # units. Coverage then fails as `SourcesOriginalPath ... does not match any
+      # source file`, because the profile contains no source files at all --
+      # a misleading error that reads like a path bug rather than a missing-DWARF bug.
+      #
+      # Coverage depends on this build DISABLING LTO. The workspace release profile
+      # is lto="fat" + codegen-units=1, which merges the program into ~14 compile
+      # units; the cover task then resolves 0 PCs and renders nothing, while every
+      # CI step still reports success. Turning LTO off restores per-unit line
+      # tables -- the same change took zolana from 28 units / 0% to 434 units / 98%.
+      #
+      # NOTE: e_machine 247 (plain EM_BPF, what anchor 0.27 / solana 1.14.29 emits)
+      # is NOT the problem. loopscale ships 247 and renders 71% line coverage. An
+      # earlier version of this comment blamed the arch; that was wrong.
+      #
+      # debug=2 + strip=none keep the DWARF; ONE build yields both the executed
+      # target/deploy/*.so and the unstripped intermediate the cover task reads, so
+      # the symbols always match the binary being fuzzed.
+      - name: Build marinade program (anchor 0.27 / solana 1.14.29)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work \
+            -e CARGO_PROFILE_RELEASE_DEBUG=2 \
+            -e CARGO_PROFILE_RELEASE_STRIP=none \
+            -e CARGO_PROFILE_RELEASE_LTO=false \
+            -e CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            projectserum/build:v0.27.0 \
+            bash -lc "anchor build"
+          sudo chown -R "$(id -u):$(id -g)" target
+          mkdir -p fuzz/marinade/programs
+          cp target/deploy/marinade_finance.so fuzz/marinade/programs/marinade_program.so
+          echo "staged program e_machine=$(od -An -tu2 -j18 -N2 fuzz/marinade/programs/marinade_program.so | tr -d ' ')"
+
+      # build-bundle.sh uses llvm-dwarfdump to (a) prove the staged program carries
+      # real DWARF and (b) read its comp_dir to derive SourcesOriginalPath. Without
+      # the tool both checks silently degrade to "unknown" and a DWARF-less bundle
+      # can ship, rendering empty coverage while every step still reports success.
+      - name: Install llvm-dwarfdump (coverage gate)
+        run: sudo apt-get update && sudo apt-get install -y llvm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/marinade/target
+          key: fuzz-marinade-${{ runner.os }}-${{ hashFiles('fuzz/marinade/Cargo.lock') }}
+
+      # Track crucible main so the harness is always built and fuzzed against the LATEST fuzzer, not
+      # a pinned snapshot. Updates the lock to the newest main commit before the build.
+      - name: Use latest crucible main
+        run: cd fuzz/marinade && cargo update -p crucible-fuzzer -p crucible-test-context -p crucible-idl-gen
+
+      - name: Build FuzzCorp bundle
+        run: bash fuzz/marinade/build-bundle.sh
+
+      # Upload only when secrets are actually available: pushes, manual dispatches and
+      # same-repo PRs. Fork PRs still build the program + harness above as a check but
+      # cannot upload, because GitHub withholds secrets from them.
+      # Fail-closed pre-upload checks. Everything this catches is otherwise SILENT:
+      # the bundle validates, uploads, runs and quietly produces nothing. It also
+      # stages any first-party source root the DWARF references but the bundle is
+      # missing (a program spanning programs/ + libraries/ loses the second one).
+      - name: Bundle guard (pre-upload)
+        run: ./fuzz/marinade/bundle-guard.sh fuzz/marinade/build/bundle .
+
+      - name: Upload bundle to FuzzCorp
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: asymmetric-research/fuzz-upload-action@v2
+        with:
+          upload_type: bundle
+          upload_path: fuzz/marinade/build/bundle
+        env:
+          FUZZ_ORGANIZATION: ${{ vars.FUZZ_ORGANIZATION || 'marinade' }}
+          FUZZ_PROJECT: ${{ vars.FUZZ_PROJECT || 'liquid-staking-program' }}
+          FUZZ_API_KEY: ${{ secrets.FUZZ_API_KEY }}
