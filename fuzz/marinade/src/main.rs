@@ -31767,6 +31767,12 @@ const SCOUT_FORK_VALIDATOR_LIST_BYTES: &[u8] =
     include_bytes!("../fixtures/mainnet/validator_list.bin");
 const SCOUT_FORK_STAKE_LIST_BYTES: &[u8] = include_bytes!("../fixtures/mainnet/stake_list.bin");
 
+// Fuzzing concentrates target selection onto the first N validators/stakes of the real fork
+// rather than spreading across all ~692/~46. The full fork stays loaded and consistent (validator
+// lookups still scan the real count, merge still appends at the real end); only which stake/
+// validator INDEX the fuzzer picks is capped, so it drives a few targets into deep states.
+const SCOUT_FORK_FUZZ_N: u32 = 5;
+
 // Stake graph fixtures (real Marinade stake + vote accounts) for the crank family.
 // Filenames are the on-chain addresses; owner is Stake111.../Vote111... respectively.
 // Cloned into the SVM by scout_load_mainnet_fork so crank actions have a real stake graph.
@@ -32187,7 +32193,7 @@ fn scout_fork_deactivate_stake(
     if s_count == 0 || s_item < 48 {
         return false;
     }
-    let stake_index = stake_index_raw % s_count;
+    let stake_index = stake_index_raw % s_count.min(SCOUT_FORK_FUZZ_N);
 
     // stake_account + epoch from the stake_list record at stake_index.
     let sl_data = match f.ctx.read_account(&stake_list) {
@@ -32355,8 +32361,8 @@ fn scout_fork_update_active(
 
     // Scan forward from the fuzzer's stake_index for the first usable Active record.
     let mut chosen: Option<(u32, Pubkey, u32)> = None; // (stake_index, stake_account, validator_index)
-    for offset in 0..s_count {
-        let stake_index = stake_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let stake_index = stake_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (stake_index as usize) * s_item;
         if sbase + 50 > sl_data.len() {
             continue;
@@ -32598,8 +32604,8 @@ fn scout_fork_stake_reserve(f: &mut MarinadeFinanceFixture, validator_index_raw:
     // Derive a real validator whose vote account is cloned (present for the delegate CPI) from a
     // cloned stake's delegation.voter.
     let mut chosen: Option<(u32, Pubkey, u64)> = None; // (validator_index, validator_vote, stake_epoch)
-    for offset in 0..s_count {
-        let idx = validator_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let idx = validator_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (idx as usize) * s_item;
         if sbase + 48 > sl_data.len() {
             continue;
@@ -32785,8 +32791,8 @@ fn scout_fork_partial_unstake(
 
     // Choose a cloned, Active, non-emergency, reconciled stake and derive its validator_index.
     let mut chosen: Option<(u32, Pubkey, u32, u64, u64)> = None; // (stake_index, stake_account, vidx, delegated, epoch)
-    for offset in 0..s_count {
-        let stake_index = stake_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let stake_index = stake_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (stake_index as usize) * s_item;
         if sbase + 50 > sl_data.len() {
             continue;
@@ -32962,8 +32968,8 @@ fn scout_fork_update_deactivated(
 
     // Choose a cloned, Active, reconciled stake and derive its validator_index.
     let mut chosen: Option<(u32, Pubkey, u32, u64, u64)> = None; // (stake_index, stake_account, vidx, delegated, epoch)
-    for offset in 0..s_count {
-        let stake_index = stake_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let stake_index = stake_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (stake_index as usize) * s_item;
         if sbase + 50 > sl_data.len() {
             continue;
@@ -33171,8 +33177,8 @@ fn scout_fork_emergency_unstake(
 
     // Choose a cloned, Active, non-emergency, reconciled stake and derive its validator_index.
     let mut chosen: Option<(u32, Pubkey, u32, u64)> = None; // (stake_index, stake_account, vidx, epoch)
-    for offset in 0..s_count {
-        let stake_index = stake_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let stake_index = stake_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (stake_index as usize) * s_item;
         if sbase + 50 > sl_data.len() {
             continue;
@@ -33334,8 +33340,8 @@ fn scout_fork_merge_stakes(f: &mut MarinadeFinanceFixture, validator_index_raw: 
 
     // Pick a validator whose vote account is cloned (present) so the delegation is valid for the merge.
     let mut chosen: Option<(u32, Pubkey)> = None;
-    for offset in 0..(v_count as u32) {
-        let vidx = validator_index_raw.wrapping_add(offset) % (v_count as u32);
+    for offset in 0..(v_count as u32).min(SCOUT_FORK_FUZZ_N) {
+        let vidx = validator_index_raw.wrapping_add(offset) % (v_count as u32).min(SCOUT_FORK_FUZZ_N);
         let base = 8usize + (vidx as usize) * v_item;
         if base + 32 > vl_data.len() {
             continue;
@@ -33604,8 +33610,8 @@ fn scout_fork_withdraw_stake_account(
 
     // Choose a cloned, Active, non-emergency, reconciled stake with room for a small split.
     let mut chosen: Option<(u32, Pubkey, u32, u64, u64)> = None;
-    for offset in 0..s_count {
-        let stake_index = stake_index_raw.wrapping_add(offset) % s_count;
+    for offset in 0..s_count.min(SCOUT_FORK_FUZZ_N) {
+        let stake_index = stake_index_raw.wrapping_add(offset) % s_count.min(SCOUT_FORK_FUZZ_N);
         let sbase = 8usize + (stake_index as usize) * s_item;
         if sbase + 50 > sl_data.len() {
             continue;
@@ -33796,8 +33802,8 @@ fn scout_fork_deposit_stake_account(f: &mut MarinadeFinanceFixture, validator_in
 
     // Pick a validator whose vote account is cloned (present) so get_checked(voter) resolves.
     let mut chosen: Option<(u32, Pubkey)> = None;
-    for offset in 0..(v_count as u32) {
-        let vidx = validator_index_raw.wrapping_add(offset) % (v_count as u32);
+    for offset in 0..(v_count as u32).min(SCOUT_FORK_FUZZ_N) {
+        let vidx = validator_index_raw.wrapping_add(offset) % (v_count as u32).min(SCOUT_FORK_FUZZ_N);
         let base = 8usize + (vidx as usize) * v_item;
         if base + 32 > vl_data.len() {
             continue;
