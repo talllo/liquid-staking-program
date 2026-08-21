@@ -1,0 +1,50 @@
+name: FuzzCorp bundle (marinade_invariants)
+
+# Builds the Marinade crucible fuzz harness (fuzz/marinade) and submits it to FuzzCorp as a bundle.
+# Runs on every push to main that touches the harness, and can be triggered manually.
+#
+# Required repo configuration (Settings > Secrets and variables > Actions):
+#   - secret  FUZZ_API_KEY       FuzzCorp dashboard API key (service account)
+#   - var     FUZZ_ORGANIZATION  = marinade
+#   - var     FUZZ_PROJECT       = liquid-staking-program
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fuzz/marinade/**'
+      - '.github/workflows/fuzzcorp.yml'
+  workflow_dispatch: {}
+
+# ubuntu-latest is amd64, matching the FuzzCorp worker fleet — the harness builds natively, no
+# cross-compilation needed.
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/marinade/target
+          key: fuzz-marinade-${{ runner.os }}-${{ hashFiles('fuzz/marinade/Cargo.lock') }}
+
+      - name: Build FuzzCorp bundle
+        run: bash fuzz/marinade/build-bundle.sh
+
+      - name: Upload bundle to FuzzCorp
+        uses: asymmetric-research/fuzz-upload-action@v2
+        with:
+          upload_type: bundle
+          upload_path: fuzz/marinade/build/bundle
+        env:
+          FUZZ_ORGANIZATION: ${{ vars.FUZZ_ORGANIZATION }}
+          FUZZ_PROJECT: ${{ vars.FUZZ_PROJECT }}
+          FUZZ_API_KEY: ${{ secrets.FUZZ_API_KEY }}
