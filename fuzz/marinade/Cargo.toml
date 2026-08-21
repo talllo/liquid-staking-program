@@ -7,12 +7,13 @@ edition = "2021"
 # Standalone workspace - isolated from parent project to avoid Solana version conflicts
 
 [dependencies]
-# Fuzzing framework (crucible runtime) — git deps on the chore/litesvm-0.15.2 branch, which carries the
-# P-0007 panic scanner (crucible-test-context `last_target_panic`, ported in f2ae84e). For CI/fuzzcorp
-# reproducibility, replace `branch = ...` with `rev = "<pinned-sha>"`.
-crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible.git", rev = "432481aff602682c55c399e9f17d00ddcde9a8f3" }
-crucible-test-context = { git = "https://github.com/asymmetric-research/crucible.git", rev = "432481aff602682c55c399e9f17d00ddcde9a8f3" }
-crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible.git", rev = "432481aff602682c55c399e9f17d00ddcde9a8f3" }
+# Fuzzing framework (crucible runtime) — tracks crucible `main` so the harness is always built and
+# fuzzed against the latest fuzzer. CI runs `cargo update -p crucible-*` before building to pull the
+# newest main; the committed Cargo.lock is only the baseline. (main carries litesvm 0.15.2 + the
+# P-0007 panic scanner `last_target_panic`.)
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible.git", branch = "main" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible.git", branch = "main" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible.git", branch = "main" }
 
 anchor-lang = "1.0.1"
 

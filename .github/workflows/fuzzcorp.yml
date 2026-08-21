@@ -44,6 +44,11 @@ jobs:
             fuzz/marinade/target
           key: fuzz-marinade-${{ runner.os }}-${{ hashFiles('fuzz/marinade/Cargo.lock') }}
 
+      # Track crucible main so the harness is always built and fuzzed against the LATEST fuzzer, not
+      # a pinned snapshot. Updates the lock to the newest main commit before the build.
+      - name: Use latest crucible main
+        run: cd fuzz/marinade && cargo update -p crucible-fuzzer -p crucible-test-context -p crucible-idl-gen
+
       - name: Build FuzzCorp bundle
         run: bash fuzz/marinade/build-bundle.sh
 
